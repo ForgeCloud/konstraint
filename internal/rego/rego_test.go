@@ -172,6 +172,143 @@ func TestGetPolicyID_Null(t *testing.T) {
 	}
 }
 
+func TestParseVersion(t *testing.T) {
+	testCases := []struct {
+		input    string
+		expected Version
+		wantErr  bool
+	}{
+		{"v0", V0, false},
+		{"v1", V1, false},
+		{"V0", V0, false},
+		{"V1", V1, false},
+		{"invalid", V0, true},
+		{"", V0, true},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.input, func(t *testing.T) {
+			actual, err := ParseVersion(tc.input)
+			if tc.wantErr && err == nil {
+				t.Errorf("expected error for input %q", tc.input)
+			}
+			if !tc.wantErr && err != nil {
+				t.Errorf("unexpected error for input %q: %v", tc.input, err)
+			}
+			if actual != tc.expected {
+				t.Errorf("unexpected Version. expected %v, actual %v", tc.expected, actual)
+			}
+		})
+	}
+}
+
+func TestSourceV1(t *testing.T) {
+	raw := `package test
+
+import future.keywords.if
+import future.keywords.contains
+
+violation contains msg if {
+    msg := "test"
+}
+`
+	rego := Rego{
+		sanitizedRaw: raw,
+	}
+
+	actual := rego.SourceV1()
+
+	expected := `package test
+
+violation contains msg if {
+    msg := "test"
+}`
+
+	if actual != expected {
+		t.Errorf("unexpected SourceV1.\nexpected:\n%v\n\nactual:\n%v", expected, actual)
+	}
+}
+
+func TestStripV1Imports(t *testing.T) {
+	testCases := []struct {
+		desc     string
+		input    string
+		expected string
+	}{
+		{
+			desc: "strip future.keywords.if",
+			input: `package test
+import future.keywords.if
+violation if { true }`,
+			expected: `package test
+violation if { true }`,
+		},
+		{
+			desc: "strip future.keywords.contains",
+			input: `package test
+import future.keywords.contains
+violation contains msg if { msg := "x" }`,
+			expected: `package test
+violation contains msg if { msg := "x" }`,
+		},
+		{
+			desc: "strip future.keywords (all)",
+			input: `package test
+import future.keywords
+violation contains msg if { msg := "x" }`,
+			expected: `package test
+violation contains msg if { msg := "x" }`,
+		},
+		{
+			desc: "preserve other imports",
+			input: `package test
+import future.keywords.if
+import data.lib.core
+violation if { core.something }`,
+			expected: `package test
+import data.lib.core
+violation if { core.something }`,
+		},
+		{
+			desc: "no future imports",
+			input: `package test
+import data.lib.core
+violation if { true }`,
+			expected: `package test
+import data.lib.core
+violation if { true }`,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.desc, func(t *testing.T) {
+			actual := StripV1Imports(tc.input)
+			if actual != tc.expected {
+				t.Errorf("unexpected result.\nexpected:\n%v\n\nactual:\n%v", tc.expected, actual)
+			}
+		})
+	}
+}
+
+func TestGetViolationsV1(t *testing.T) {
+	violations, err := GetViolations("../../test/policies-v1/full-metadata-v1", V1)
+	if err != nil {
+		t.Fatalf("Error getting v1 violations: %v", err)
+	}
+
+	if len(violations) != 1 {
+		t.Fatalf("Expected 1 violation, got %d", len(violations))
+	}
+
+	if violations[0].Title() != "The title v1" {
+		t.Errorf("unexpected Title. expected %q, actual %q", "The title v1", violations[0].Title())
+	}
+
+	if violations[0].Version() != V1 {
+		t.Errorf("unexpected Version. expected %v, actual %v", V1, violations[0].Version())
+	}
+}
+
 func TestGetRuleParamNamesFromInput(t *testing.T) {
 	testCases := []struct {
 		desc string

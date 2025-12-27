@@ -2,9 +2,11 @@ package commands
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"text/template"
 
 	"github.com/plexsystems/konstraint/internal/rego"
@@ -12,6 +14,7 @@ import (
 	"github.com/go-sprout/sprout/sprigin"
 	v1 "github.com/open-policy-agent/frameworks/constraint/pkg/apis/templates/v1"
 	"github.com/open-policy-agent/frameworks/constraint/pkg/apis/templates/v1beta1"
+	"github.com/open-policy-agent/frameworks/constraint/pkg/core/templates"
 	log "github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
@@ -63,13 +66,17 @@ Create constraints with the Gatekeeper enforcement action set to dryrun
 				return fmt.Errorf("bind log-level flag: %w", err)
 			}
 
+			if err := viper.BindPFlag("rego-version", cmd.PersistentFlags().Lookup("rego-version")); err != nil {
+				return fmt.Errorf("bind rego-version flag: %w", err)
+			}
+
 			if cmd.PersistentFlags().Lookup("constraint-template-custom-template-file").Changed && cmd.PersistentFlags().Lookup("constraint-template-version").Changed {
-				return fmt.Errorf("need to set either constraint-template-custom-template-file or constraint-template-version")
+				return errors.New("need to set either constraint-template-custom-template-file or constraint-template-version")
 			}
 			if cmd.PersistentFlags().Lookup("log-level").Changed {
 				level, err := log.ParseLevel(viper.GetString("log-level"))
 				if err != nil {
-					return fmt.Errorf("unknown log level: Need to use either error, info, debug or trace")
+					return errors.New("unknown log level: Need to use either error, info, debug or trace")
 				}
 				log.SetLevel(level)
 			}
@@ -90,11 +97,17 @@ Create constraints with the Gatekeeper enforcement action set to dryrun
 	cmd.PersistentFlags().String("constraint-template-custom-template-file", "", "Path to a custom template file to generate constraint templates")
 	cmd.PersistentFlags().String("constraint-custom-template-file", "", "Path to a custom template file to generate constraints")
 	cmd.PersistentFlags().String("log-level", "info", "Set a log level. Options: error, info, debug, trace")
+	cmd.PersistentFlags().String("rego-version", "v0", "Set the Rego version for parsing and template generation (v0, v1)")
 	return &cmd
 }
 
 func runCreateCommand(path string) error {
-	violations, err := rego.GetViolations(path)
+	regoVersion, err := rego.ParseVersion(viper.GetString("rego-version"))
+	if err != nil {
+		return fmt.Errorf("parse rego-version flag: %w", err)
+	}
+
+	violations, err := rego.GetViolations(path, regoVersion)
 	if err != nil {
 		return fmt.Errorf("get violations: %w", err)
 	}
@@ -200,7 +213,6 @@ func renderConstraintTemplate(violation rego.Rego, constraintTemplateVersion str
 	}
 
 	return constraintTemplateBytes, nil
-
 }
 func renderConstraint(violation rego.Rego, constraintCustomTemplateFile string, logger *log.Entry) ([]byte, error) {
 	var constraintBytes []byte
@@ -225,7 +237,6 @@ func renderConstraint(violation rego.Rego, constraintCustomTemplateFile string, 
 		}
 	}
 	return constraintBytes, nil
-
 }
 
 func renderTemplate(violation rego.Rego, appliedTemplate []byte) ([]byte, error) {
@@ -262,11 +273,32 @@ func getConstraintTemplatev1(violation rego.Rego, _ *log.Entry) *v1.ConstraintTe
 			Targets: []v1.Target{
 				{
 					Target: "admission.k8s.gatekeeper.sh",
-					Libs:   violation.Dependencies(),
-					Rego:   violation.Source(),
 				},
 			},
 		},
+	}
+
+	if violation.Version() == rego.V1 {
+		source := map[string]any{
+			"version": "v1",
+			"rego":    violation.SourceV1(),
+		}
+		if len(violation.Dependencies()) > 0 {
+			var libs []string
+			for _, lib := range violation.Dependencies() {
+				libs = append(libs, rego.StripV1Imports(lib))
+			}
+			source["libs"] = libs
+		}
+		constraintTemplate.Spec.Targets[0].Code = []v1.Code{
+			{
+				Engine: "Rego",
+				Source: &templates.Anything{Value: source},
+			},
+		}
+	} else {
+		constraintTemplate.Spec.Targets[0].Rego = violation.Source()
+		constraintTemplate.Spec.Targets[0].Libs = violation.Dependencies()
 	}
 
 	if len(violation.AnnotationParameters()) > 0 {
@@ -301,11 +333,32 @@ func getConstraintTemplatev1beta1(violation rego.Rego, _ *log.Entry) *v1beta1.Co
 			Targets: []v1beta1.Target{
 				{
 					Target: "admission.k8s.gatekeeper.sh",
-					Libs:   violation.Dependencies(),
-					Rego:   violation.Source(),
 				},
 			},
 		},
+	}
+
+	if violation.Version() == rego.V1 {
+		source := map[string]any{
+			"version": "v1",
+			"rego":    violation.SourceV1(),
+		}
+		if len(violation.Dependencies()) > 0 {
+			var libs []string
+			for _, lib := range violation.Dependencies() {
+				libs = append(libs, rego.StripV1Imports(lib))
+			}
+			source["libs"] = libs
+		}
+		constraintTemplate.Spec.Targets[0].Code = []v1beta1.Code{
+			{
+				Engine: "Rego",
+				Source: &templates.Anything{Value: source},
+			},
+		}
+	} else {
+		constraintTemplate.Spec.Targets[0].Rego = violation.Source()
+		constraintTemplate.Spec.Targets[0].Libs = violation.Dependencies()
 	}
 
 	if len(violation.AnnotationParameters()) > 0 {
@@ -383,11 +436,5 @@ func addParametersToConstraint(constraint *unstructured.Unstructured, parameters
 }
 
 func isValidEnforcementAction(action string) bool {
-	for _, a := range []string{"deny", "dryrun", "warn"} {
-		if a == action {
-			return true
-		}
-	}
-
-	return false
+	return slices.Contains([]string{"deny", "dryrun", "warn"}, action)
 }

@@ -129,9 +129,82 @@ func TestRenderConstraintTemplateWithCustomTemplate(t *testing.T) {
 }
 
 func GetViolations() ([]rego.Rego, error) {
-	violations, err := rego.GetViolations("../../test/policies/")
+	violations, err := rego.GetViolations("../../test/policies/", rego.V0)
 	if err != nil {
 		return nil, err
 	}
 	return violations, nil
+}
+
+func GetViolationsV1() ([]rego.Rego, error) {
+	violations, err := rego.GetViolations("../../test/policies-v1/", rego.V1)
+	if err != nil {
+		return nil, err
+	}
+	return violations, nil
+}
+
+func TestRenderConstraintTemplateV0Format(t *testing.T) {
+	_, entry := log.NewNullLogger()
+
+	violations, err := GetViolations()
+	if err != nil {
+		t.Fatalf("Error getting violations: %v", err)
+	}
+
+	if len(violations) == 0 {
+		t.Fatal("No violations found")
+	}
+
+	actual, err := renderConstraintTemplate(violations[0], "v1", "", entry.LastEntry())
+	if err != nil {
+		t.Fatalf("Error rendering constrainttemplate: %v", err)
+	}
+
+	if bytes.Contains(actual, []byte("code:")) {
+		t.Error("v0 template should not contain 'code:' field")
+	}
+	if bytes.Contains(actual, []byte("engine: Rego")) {
+		t.Error("v0 template should not contain 'engine: Rego'")
+	}
+	if !bytes.Contains(actual, []byte("libs:")) {
+		t.Error("v0 template should contain 'libs:' field")
+	}
+	if !bytes.Contains(actual, []byte("rego: |")) {
+		t.Error("v0 template should contain 'rego: |' field")
+	}
+}
+
+func TestRenderConstraintTemplateV1Format(t *testing.T) {
+	_, entry := log.NewNullLogger()
+
+	violations, err := GetViolationsV1()
+	if err != nil {
+		t.Fatalf("Error getting v1 violations: %v", err)
+	}
+
+	if len(violations) == 0 {
+		t.Fatal("No violations found")
+	}
+
+	actual, err := renderConstraintTemplate(violations[0], "v1", "", entry.LastEntry())
+	if err != nil {
+		t.Fatalf("Error rendering constrainttemplate: %v", err)
+	}
+
+	if !bytes.Contains(actual, []byte("code:")) {
+		t.Error("v1 template should contain 'code:' field")
+	}
+	if !bytes.Contains(actual, []byte("engine: Rego")) {
+		t.Error("v1 template should contain 'engine: Rego'")
+	}
+	if !bytes.Contains(actual, []byte("source:")) {
+		t.Error("v1 template should contain 'source:' field")
+	}
+	if !bytes.Contains(actual, []byte("version: v1")) {
+		t.Error("v1 template should contain 'version: v1' in source")
+	}
+	if bytes.Contains(actual, []byte("import future.keywords")) {
+		t.Error("v1 template should not contain 'import future.keywords'")
+	}
 }
