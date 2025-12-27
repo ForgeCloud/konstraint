@@ -240,7 +240,9 @@ func renderConstraint(violation rego.Rego, constraintCustomTemplateFile string, 
 }
 
 func renderTemplate(violation rego.Rego, appliedTemplate []byte) ([]byte, error) {
-	t, err := template.New("template").Funcs(sprigin.FuncMap()).Parse(string(appliedTemplate))
+	funcMap := sprigin.FuncMap()
+	funcMap["stripV1Imports"] = rego.StripV1Imports
+	t, err := template.New("template").Funcs(funcMap).Parse(string(appliedTemplate))
 	if err != nil {
 		return nil, fmt.Errorf("parsing template: %w", err)
 	}

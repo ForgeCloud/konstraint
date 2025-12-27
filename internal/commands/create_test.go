@@ -128,6 +128,36 @@ func TestRenderConstraintTemplateWithCustomTemplate(t *testing.T) {
 	}
 }
 
+func TestRenderConstraintTemplateWithCustomTemplateV1(t *testing.T) {
+	_, entry := log.NewNullLogger()
+
+	violations, err := GetViolationsV1()
+	if err != nil {
+		t.Errorf("Error getting violations: %v", err)
+	}
+
+	expected, err := os.ReadFile("../../test/output/custom/template_FullMetadata_v1.yaml")
+	if err != nil {
+		t.Errorf("Error reading expected file: %v", err)
+	}
+
+	// Need to remove carriage return for testing on Windows
+	expected = bytes.ReplaceAll(expected, []byte("\r"), []byte(""))
+
+	actual, err := renderConstraintTemplate(violations[0], "v1", "constrainttemplate_template.tpl", entry.LastEntry())
+
+	if err != nil {
+		t.Errorf("Error rendering constrainttemplate: %v", err)
+	}
+
+	// Need to remove carriage return for testing on Windows
+	actual = bytes.ReplaceAll(actual, []byte("\r"), []byte(""))
+
+	if !bytes.Equal(actual, expected) {
+		t.Errorf("Unexpected rendered template:\n %v", cmp.Diff(string(expected), string(actual)))
+	}
+}
+
 func GetViolations() ([]rego.Rego, error) {
 	violations, err := rego.GetViolations("../../test/policies/", rego.V0)
 	if err != nil {
