@@ -26,6 +26,7 @@ Set the URL where the policies are hosted at
       --include-comments       Include comments from the rego source in the documentation
       --no-rego                Do not include the Rego in the policy documentation
   -o, --output string          Output location (including filename) for the policy documentation (default "policies.md")
+      --rego-version string    Rego version for parsing policies (v0, v1) (default "v0")
       --template-file string   File to read the template from (default: "")
       --url string             The URL where the policy files are hosted at (e.g. https://github.com/policies)
 ```
