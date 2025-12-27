@@ -134,7 +134,7 @@ jobs:
         run: opa check --v0-compatible --strict --ignore "*.yaml" examples
 
       - name: opa check strict (v1)
-        run: opa check --strict --ignore "*.yaml" test/policies-v1
+        run: opa check --strict --ignore "*.yaml" examples
 
       - name: setup regal
         uses: styrainc/setup-regal@v1.0.0

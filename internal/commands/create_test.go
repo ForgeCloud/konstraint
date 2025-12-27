@@ -137,7 +137,7 @@ func GetViolations() ([]rego.Rego, error) {
 }
 
 func GetViolationsV1() ([]rego.Rego, error) {
-	violations, err := rego.GetViolations("../../test/policies-v1/", rego.V1)
+	violations, err := rego.GetViolations("../../test/policies/", rego.V1)
 	if err != nil {
 		return nil, err
 	}

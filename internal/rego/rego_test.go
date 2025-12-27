@@ -291,17 +291,17 @@ violation if { true }`,
 }
 
 func TestGetViolationsV1(t *testing.T) {
-	violations, err := GetViolations("../../test/policies-v1/full-metadata-v1", V1)
+	violations, err := GetViolations("../../test/policies", V1)
 	if err != nil {
 		t.Fatalf("Error getting v1 violations: %v", err)
 	}
 
-	if len(violations) != 1 {
-		t.Fatalf("Expected 1 violation, got %d", len(violations))
+	if len(violations) != 3 {
+		t.Fatalf("Expected 3 violations, got %d", len(violations))
 	}
 
-	if violations[0].Title() != "The title v1" {
-		t.Errorf("unexpected Title. expected %q, actual %q", "The title v1", violations[0].Title())
+	if violations[0].Title() != "The title" {
+		t.Errorf("unexpected Title. expected %q, actual %q", "The title", violations[0].Title())
 	}
 
 	if violations[0].Version() != V1 {
