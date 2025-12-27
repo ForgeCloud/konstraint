@@ -292,19 +292,22 @@ func getDocumentation(path string, outputDirectory string, regoVersion rego.Vers
 			Parameters:  parameters,
 		}
 
-		var rego string
+		var regoSource string
 		if viper.GetBool("include-comments") {
-			rego = policy.FullSource()
+			regoSource = policy.FullSource()
 		} else {
-			rego = policy.Source()
+			regoSource = policy.Source()
+		}
+		if regoVersion == rego.V1 {
+			regoSource = rego.StripV1Imports(regoSource)
 		}
 		if viper.GetBool("no-rego") {
-			rego = ""
+			regoSource = ""
 		}
 		document := Document{
 			Header: header,
 			URL:    url,
-			Rego:   rego,
+			Rego:   regoSource,
 			Policy: policy,
 		}
 
