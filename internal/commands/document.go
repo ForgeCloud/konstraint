@@ -2,6 +2,7 @@ package commands
 
 import (
 	_ "embed"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -103,6 +104,14 @@ Set the URL where the policies are hosted at
 				return fmt.Errorf("bind rego-version flag: %w", err)
 			}
 
+			if err := viper.BindPFlag("strip-v0-imports", cmd.Flags().Lookup("strip-v0-imports")); err != nil {
+				return fmt.Errorf("bind strip-v0-imports flag: %w", err)
+			}
+
+			if cmd.Flags().Lookup("strip-v0-imports").Changed && viper.GetString("rego-version") != "v1" {
+				return errors.New("--strip-v0-imports can only be used with --rego-version v1")
+			}
+
 			path := "."
 			if len(args) > 0 {
 				path = args[0]
@@ -118,6 +127,7 @@ Set the URL where the policies are hosted at
 	cmd.Flags().Bool("no-rego", false, "Do not include the Rego in the policy documentation")
 	cmd.Flags().Bool("include-comments", false, "Include comments from the rego source in the documentation")
 	cmd.Flags().String("rego-version", "v0", "Rego version for parsing policies (v0, v1)")
+	cmd.Flags().Bool("strip-v0-imports", false, "Strip v0 compatibility imports from documentation: import future.keywords[.if|.in|.every|.contains], import rego.v1 (only valid with --rego-version v1)")
 
 	return &cmd
 }
@@ -135,7 +145,9 @@ func runDocCommand(path string) error {
 		return fmt.Errorf("parse rego-version flag: %w", err)
 	}
 
-	docs, err := getDocumentation(path, outputDirectory, regoVersion)
+	stripV0Imports := viper.GetBool("strip-v0-imports")
+
+	docs, err := getDocumentation(path, outputDirectory, regoVersion, stripV0Imports)
 	if err != nil {
 		return fmt.Errorf("get documentation: %w", err)
 	}
@@ -172,7 +184,7 @@ func runDocCommand(path string) error {
 	return nil
 }
 
-func getDocumentation(path string, outputDirectory string, regoVersion rego.Version) (map[rego.Severity][]Document, error) {
+func getDocumentation(path string, outputDirectory string, regoVersion rego.Version, stripV0Imports bool) (map[rego.Severity][]Document, error) {
 	policies, err := rego.GetAllSeveritiesWithoutImports(path, regoVersion)
 	if err != nil {
 		return nil, fmt.Errorf("get all severities: %w", err)
@@ -298,7 +310,7 @@ func getDocumentation(path string, outputDirectory string, regoVersion rego.Vers
 		} else {
 			regoSource = policy.Source()
 		}
-		if regoVersion == rego.V1 {
+		if stripV0Imports {
 			regoSource = rego.StripV1Imports(regoSource)
 		}
 		if viper.GetBool("no-rego") {

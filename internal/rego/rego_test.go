@@ -202,33 +202,6 @@ func TestParseVersion(t *testing.T) {
 	}
 }
 
-func TestSourceV1(t *testing.T) {
-	raw := `package test
-
-import future.keywords.if
-import future.keywords.contains
-
-violation contains msg if {
-    msg := "test"
-}
-`
-	rego := Rego{
-		sanitizedRaw: raw,
-	}
-
-	actual := rego.SourceV1()
-
-	expected := `package test
-
-violation contains msg if {
-    msg := "test"
-}`
-
-	if actual != expected {
-		t.Errorf("unexpected SourceV1.\nexpected:\n%v\n\nactual:\n%v", expected, actual)
-	}
-}
-
 func TestStripV1Imports(t *testing.T) {
 	testCases := []struct {
 		desc     string

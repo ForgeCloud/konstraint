@@ -489,13 +489,6 @@ func (r Rego) Source() string {
 	return removeComments(r.sanitizedRaw)
 }
 
-// SourceV1 returns the source code formatted for OPA v1.
-// It strips `import future.keywords` and `import rego.v1` imports
-// since these are not needed in v1.
-func (r Rego) SourceV1() string {
-	return StripV1Imports(r.Source())
-}
-
 var v0Imports = []string{
 	"import future.keywords.contains",
 	"import future.keywords.every",

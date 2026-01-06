@@ -18,10 +18,10 @@ spec:
   - code:
     - engine: Rego
       source:
-        libs: {{- range .Dependencies }}
-        - |- {{- stripV1Imports . | nindent 10 -}}
-        {{ end }}
-        rego: |- {{- .SourceV1 | nindent 10 }}
+        libs: {{- range .RenderedDependencies }}
+        - |- {{- . | nindent 10 }}
+        {{- end }}
+        rego: |- {{- .RenderedSource | nindent 10 }}
         version: v1
   {{- else }}
   - libs: {{- range .Dependencies }}

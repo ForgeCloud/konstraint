@@ -70,6 +70,14 @@ Create constraints with the Gatekeeper enforcement action set to dryrun
 				return fmt.Errorf("bind rego-version flag: %w", err)
 			}
 
+			if err := viper.BindPFlag("strip-v0-imports", cmd.PersistentFlags().Lookup("strip-v0-imports")); err != nil {
+				return fmt.Errorf("bind strip-v0-imports flag: %w", err)
+			}
+
+			if cmd.PersistentFlags().Lookup("strip-v0-imports").Changed && viper.GetString("rego-version") != "v1" {
+				return errors.New("--strip-v0-imports can only be used with --rego-version v1")
+			}
+
 			if cmd.PersistentFlags().Lookup("constraint-template-custom-template-file").Changed && cmd.PersistentFlags().Lookup("constraint-template-version").Changed {
 				return errors.New("need to set either constraint-template-custom-template-file or constraint-template-version")
 			}
@@ -98,6 +106,7 @@ Create constraints with the Gatekeeper enforcement action set to dryrun
 	cmd.PersistentFlags().String("constraint-custom-template-file", "", "Path to a custom template file to generate constraints")
 	cmd.PersistentFlags().String("log-level", "info", "Set a log level. Options: error, info, debug, trace")
 	cmd.PersistentFlags().String("rego-version", "v0", "Set the Rego version for parsing and template generation (v0, v1)")
+	cmd.PersistentFlags().Bool("strip-v0-imports", false, "Strip v0 compatibility imports from generated templates: import future.keywords[.if|.in|.every|.contains], import rego.v1 (only valid with --rego-version v1)")
 	return &cmd
 }
 
@@ -144,8 +153,9 @@ func runCreateCommand(path string) error {
 
 		constraintTemplateVersion := viper.GetString("constraint-template-version")
 		constraintTemplateCustomTemplateFile := viper.GetString("constraint-template-custom-template-file")
+		stripV0Imports := viper.GetBool("strip-v0-imports")
 
-		constraintTemplate, err := renderConstraintTemplate(violation, constraintTemplateVersion, constraintTemplateCustomTemplateFile, logger)
+		constraintTemplate, err := renderConstraintTemplate(violation, constraintTemplateVersion, constraintTemplateCustomTemplateFile, stripV0Imports, logger)
 		if err != nil {
 			return fmt.Errorf("rendering ConstraintTemplate: %w", err)
 		}
@@ -182,7 +192,7 @@ func runCreateCommand(path string) error {
 	return nil
 }
 
-func renderConstraintTemplate(violation rego.Rego, constraintTemplateVersion string, constraintTemplateCustomTemplateFile string, logger *log.Entry) ([]byte, error) {
+func renderConstraintTemplate(violation rego.Rego, constraintTemplateVersion string, constraintTemplateCustomTemplateFile string, stripV0Imports bool, logger *log.Entry) ([]byte, error) {
 	var constraintTemplate any
 	var constraintTemplateBytes []byte
 
@@ -191,16 +201,16 @@ func renderConstraintTemplate(violation rego.Rego, constraintTemplateVersion str
 		if err != nil {
 			return nil, fmt.Errorf("unable to open/read template file: %w", err)
 		}
-		constraintTemplateBytes, err = renderTemplate(violation, customTemplate)
+		constraintTemplateBytes, err = renderTemplate(violation, stripV0Imports, customTemplate)
 		if err != nil {
 			return nil, fmt.Errorf("unable to render custom template: %w", err)
 		}
 	} else {
 		switch constraintTemplateVersion {
 		case "v1":
-			constraintTemplate = getConstraintTemplatev1(violation, logger)
+			constraintTemplate = getConstraintTemplatev1(violation, stripV0Imports, logger)
 		case "v1beta1":
-			constraintTemplate = getConstraintTemplatev1beta1(violation, logger)
+			constraintTemplate = getConstraintTemplatev1beta1(violation, stripV0Imports, logger)
 		default:
 			return nil, fmt.Errorf("unsupported API version for constrainttemplate: %s", constraintTemplateVersion)
 		}
@@ -221,7 +231,7 @@ func renderConstraint(violation rego.Rego, constraintCustomTemplateFile string, 
 		if err != nil {
 			return nil, fmt.Errorf("unable to open/read template file: %w", err)
 		}
-		constraintBytes, err = renderTemplate(violation, customTemplate)
+		constraintBytes, err = renderTemplate(violation, false, customTemplate)
 		if err != nil {
 			return nil, fmt.Errorf("unable to render custom constraint: %w", err)
 		}
@@ -239,23 +249,49 @@ func renderConstraint(violation rego.Rego, constraintCustomTemplateFile string, 
 	return constraintBytes, nil
 }
 
-func renderTemplate(violation rego.Rego, appliedTemplate []byte) ([]byte, error) {
-	funcMap := sprigin.FuncMap()
-	funcMap["stripV1Imports"] = rego.StripV1Imports
-	t, err := template.New("template").Funcs(funcMap).Parse(string(appliedTemplate))
+type templateData struct {
+	rego.Rego
+	stripV0Imports bool
+}
+
+func (t templateData) RenderedSource() string {
+	if t.stripV0Imports {
+		return rego.StripV1Imports(t.Source())
+	}
+	return t.Source()
+}
+
+func (t templateData) RenderedDependencies() []string {
+	deps := t.Dependencies()
+	if !t.stripV0Imports {
+		return deps
+	}
+	result := make([]string, len(deps))
+	for i, dep := range deps {
+		result[i] = rego.StripV1Imports(dep)
+	}
+	return result
+}
+
+func renderTemplate(violation rego.Rego, stripV0Imports bool, appliedTemplate []byte) ([]byte, error) {
+	t, err := template.New("template").Funcs(sprigin.FuncMap()).Parse(string(appliedTemplate))
 	if err != nil {
 		return nil, fmt.Errorf("parsing template: %w", err)
 	}
 	buf := new(bytes.Buffer)
 
-	if err := t.Execute(buf, violation); err != nil {
+	data := templateData{
+		Rego:           violation,
+		stripV0Imports: stripV0Imports,
+	}
+	if err := t.Execute(buf, data); err != nil {
 		return nil, fmt.Errorf("executing template: %w", err)
 	}
 
 	return buf.Bytes(), nil
 }
 
-func getConstraintTemplatev1(violation rego.Rego, _ *log.Entry) *v1.ConstraintTemplate {
+func getConstraintTemplatev1(violation rego.Rego, stripV0Imports bool, _ *log.Entry) *v1.ConstraintTemplate {
 	constraintTemplate := v1.ConstraintTemplate{
 		TypeMeta: metav1.TypeMeta{
 			APIVersion: "templates.gatekeeper.sh/v1",
@@ -281,14 +317,22 @@ func getConstraintTemplatev1(violation rego.Rego, _ *log.Entry) *v1.ConstraintTe
 	}
 
 	if violation.Version() == rego.V1 {
+		regoSource := violation.Source()
+		if stripV0Imports {
+			regoSource = rego.StripV1Imports(regoSource)
+		}
 		source := map[string]any{
 			"version": "v1",
-			"rego":    violation.SourceV1(),
+			"rego":    regoSource,
 		}
 		if len(violation.Dependencies()) > 0 {
 			var libs []string
 			for _, lib := range violation.Dependencies() {
-				libs = append(libs, rego.StripV1Imports(lib))
+				if stripV0Imports {
+					libs = append(libs, rego.StripV1Imports(lib))
+				} else {
+					libs = append(libs, lib)
+				}
 			}
 			source["libs"] = libs
 		}
@@ -315,7 +359,7 @@ func getConstraintTemplatev1(violation rego.Rego, _ *log.Entry) *v1.ConstraintTe
 	return &constraintTemplate
 }
 
-func getConstraintTemplatev1beta1(violation rego.Rego, _ *log.Entry) *v1beta1.ConstraintTemplate {
+func getConstraintTemplatev1beta1(violation rego.Rego, stripV0Imports bool, _ *log.Entry) *v1beta1.ConstraintTemplate {
 	constraintTemplate := v1beta1.ConstraintTemplate{
 		TypeMeta: metav1.TypeMeta{
 			APIVersion: "templates.gatekeeper.sh/v1beta1",
@@ -341,14 +385,22 @@ func getConstraintTemplatev1beta1(violation rego.Rego, _ *log.Entry) *v1beta1.Co
 	}
 
 	if violation.Version() == rego.V1 {
+		regoSource := violation.Source()
+		if stripV0Imports {
+			regoSource = rego.StripV1Imports(regoSource)
+		}
 		source := map[string]any{
 			"version": "v1",
-			"rego":    violation.SourceV1(),
+			"rego":    regoSource,
 		}
 		if len(violation.Dependencies()) > 0 {
 			var libs []string
 			for _, lib := range violation.Dependencies() {
-				libs = append(libs, rego.StripV1Imports(lib))
+				if stripV0Imports {
+					libs = append(libs, rego.StripV1Imports(lib))
+				} else {
+					libs = append(libs, lib)
+				}
 			}
 			source["libs"] = libs
 		}
