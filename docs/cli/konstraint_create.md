@@ -32,6 +32,7 @@ Create constraints with the Gatekeeper enforcement action set to dryrun
       --partial-constraints                               Generate partial Constraints for policies with parameters
       --rego-version string                               Set the Rego version for parsing and template generation (v0, v1) (default "v0")
       --skip-constraints                                  Skip generation of constraints
+      --strip-v0-imports                                  Strip v0 compatibility imports from generated templates: import future.keywords[.if|.in|.every|.contains], import rego.v1 (only valid with --rego-version v1)
 ```
 
 ### SEE ALSO
