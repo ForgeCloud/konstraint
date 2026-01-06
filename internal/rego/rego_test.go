@@ -260,6 +260,30 @@ violation contains msg if { msg := "x" }`,
 violation contains msg if { msg := "x" }`,
 		},
 		{
+			desc: "strip future.keywords.in",
+			input: `package test
+import future.keywords.in
+violation if { "a" in ["a", "b"] }`,
+			expected: `package test
+violation if { "a" in ["a", "b"] }`,
+		},
+		{
+			desc: "strip future.keywords.every",
+			input: `package test
+import future.keywords.every
+violation if { every x in [1, 2] { x > 0 } }`,
+			expected: `package test
+violation if { every x in [1, 2] { x > 0 } }`,
+		},
+		{
+			desc: "strip rego.v1",
+			input: `package test
+import rego.v1
+violation if { true }`,
+			expected: `package test
+violation if { true }`,
+		},
+		{
 			desc: "preserve other imports",
 			input: `package test
 import future.keywords.if

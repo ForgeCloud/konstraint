@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 
@@ -495,15 +496,23 @@ func (r Rego) SourceV1() string {
 	return StripV1Imports(r.Source())
 }
 
-// StripV1Imports removes `import future.keywords.*` and `import rego.v1`
-// imports from Rego source code since these are not needed in OPA v1.
+var v0Imports = []string{
+	"import future.keywords.contains",
+	"import future.keywords.every",
+	"import future.keywords.if",
+	"import future.keywords.in",
+	"import future.keywords",
+	"import rego.v1",
+}
+
+// StripV1Imports removes v0 compatibility imports from Rego source code
+// since these are not needed in OPA v1.
 func StripV1Imports(source string) string {
 	var lines []string
 	prevBlank := false
 	for line := range strings.SplitSeq(source, "\n") {
 		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, "import future.keywords") ||
-			strings.HasPrefix(trimmed, "import rego.v1") {
+		if slices.Contains(v0Imports, trimmed) {
 			continue
 		}
 		isBlank := trimmed == ""
