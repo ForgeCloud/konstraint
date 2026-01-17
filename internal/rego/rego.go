@@ -74,6 +74,7 @@ const (
 	annoSkipConstraint = "skipConstraint"
 	annoAnnotations    = "annotations"
 	annoLabels         = "labels"
+	annoLinks          = "links"
 )
 
 const (
@@ -108,6 +109,7 @@ type Rego struct {
 	annoNamespaceMatchers         []string
 	annoExcludedNamespaceMatchers []string
 	annoLabelSelector             *metav1.LabelSelector
+	annoLinks                     []string
 }
 
 // Version returns the Rego language version of this policy.
@@ -219,6 +221,12 @@ func (r Rego) AnnotationParameters() map[string]apiextensionsv1.JSONSchemaProps 
 	return r.annoParameters
 }
 
+// Links returns the links defined in the policy annotations.
+// Supports both single string and array of strings in the annotation.
+func (r Rego) Links() []string {
+	return r.annoLinks
+}
+
 func (r Rego) GetAnnotation(name string) (any, error) {
 	if r.annotations == nil {
 		return nil, errors.New("no annotations set")
@@ -328,6 +336,24 @@ func (r *Rego) parseAnnotations(annotations *ast.Annotations) error {
 			return err
 		}
 		r.metaData.Labels = labels
+	}
+
+	links, ok := annotations.Custom[annoLinks]
+	if ok {
+		switch v := links.(type) {
+		case string:
+			if v != "" {
+				r.annoLinks = []string{v}
+			}
+		case []any:
+			for _, item := range v {
+				if s, ok := item.(string); ok {
+					r.annoLinks = append(r.annoLinks, s)
+				}
+			}
+		default:
+			return fmt.Errorf("supplied links value is not a string or array: %T", links)
+		}
 	}
 
 	return nil

@@ -169,3 +169,18 @@ You can optionally specify annotations and labels for the generated Constraint. 
 #     "argocd.argoproj.io/sync-options": "SkipDryRunOnMissingResource=true"
 ...
 ```
+
+## Documentation Links
+
+You can specify documentation links using the `links` annotation. Both single string and array formats are supported:
+
+```rego
+# METADATA
+# title: Example Policy
+# custom:
+#   links:
+#   - https://kubernetes.io/docs/example1/
+#   - https://kubernetes.io/docs/example2/
+```
+
+In custom templates, access via `{{ .Policy.Links }}` which returns a `[]string`.

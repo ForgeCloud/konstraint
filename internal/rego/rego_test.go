@@ -438,3 +438,98 @@ func TestGetAnnotationOrDefault_NilAnnotations(t *testing.T) {
 		t.Errorf("expected default value when annotations is nil, got %v", actual)
 	}
 }
+
+func TestLinks_Array(t *testing.T) {
+	comments := `
+# METADATA
+# title: Test Policy
+# custom:
+#   links:
+#   - https://example.com/link1
+#   - https://example.com/link2
+#   - https://example.com/link3
+package foo
+foo = "bar" { true }
+`
+	rule, err := ast.ParseModuleWithOpts("", comments, ast.ParserOptions{ProcessAnnotation: true})
+	if err != nil {
+		t.Fatalf("Error parsing module: %s", err)
+	}
+
+	rego := Rego{annotations: rule.Annotations[0]}
+	err = rego.parseAnnotations(rule.Annotations[0])
+	if err != nil {
+		t.Fatalf("Error parsing annotations: %s", err)
+	}
+
+	links := rego.Links()
+	expected := []string{
+		"https://example.com/link1",
+		"https://example.com/link2",
+		"https://example.com/link3",
+	}
+
+	if len(links) != len(expected) {
+		t.Fatalf("expected %d links, got %d", len(expected), len(links))
+	}
+
+	for i, link := range links {
+		if link != expected[i] {
+			t.Errorf("link[%d]: expected %q, got %q", i, expected[i], link)
+		}
+	}
+}
+
+func TestLinks_SingleString(t *testing.T) {
+	comments := `
+# METADATA
+# title: Test Policy
+# custom:
+#   links: https://example.com/single-link
+package foo
+foo = "bar" { true }
+`
+	rule, err := ast.ParseModuleWithOpts("", comments, ast.ParserOptions{ProcessAnnotation: true})
+	if err != nil {
+		t.Fatalf("Error parsing module: %s", err)
+	}
+
+	rego := Rego{annotations: rule.Annotations[0]}
+	err = rego.parseAnnotations(rule.Annotations[0])
+	if err != nil {
+		t.Fatalf("Error parsing annotations: %s", err)
+	}
+
+	links := rego.Links()
+	if len(links) != 1 {
+		t.Fatalf("expected 1 link, got %d", len(links))
+	}
+
+	if links[0] != "https://example.com/single-link" {
+		t.Errorf("expected %q, got %q", "https://example.com/single-link", links[0])
+	}
+}
+
+func TestLinks_NoLinks(t *testing.T) {
+	comments := `
+# METADATA
+# title: Test Policy
+package foo
+foo = "bar" { true }
+`
+	rule, err := ast.ParseModuleWithOpts("", comments, ast.ParserOptions{ProcessAnnotation: true})
+	if err != nil {
+		t.Fatalf("Error parsing module: %s", err)
+	}
+
+	rego := Rego{annotations: rule.Annotations[0]}
+	err = rego.parseAnnotations(rule.Annotations[0])
+	if err != nil {
+		t.Fatalf("Error parsing annotations: %s", err)
+	}
+
+	links := rego.Links()
+	if len(links) != 0 {
+		t.Errorf("expected no links, got %d", len(links))
+	}
+}
