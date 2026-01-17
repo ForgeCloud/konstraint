@@ -354,3 +354,87 @@ func TestGetRuleParamNamesFromInput(t *testing.T) {
 		})
 	}
 }
+
+func TestGetAnnotationOrDefault(t *testing.T) {
+	comments := `
+# METADATA
+# title: The Title
+# description: The description
+# custom:
+#   rationale: The rationale
+package foo
+foo = "bar" { true }
+`
+	rule, err := ast.ParseModuleWithOpts("", comments, ast.ParserOptions{ProcessAnnotation: true})
+	if err != nil {
+		t.Fatalf("Error parsing module: %s", err)
+	}
+
+	rego := Rego{annotations: rule.Annotations[0]}
+	err = rego.parseAnnotations(rule.Annotations[0])
+	if err != nil {
+		t.Fatalf("Error parsing annotations: %s", err)
+	}
+
+	testCases := []struct {
+		desc         string
+		name         string
+		defaultValue any
+		expected     any
+	}{
+		{
+			desc:         "existing title annotation",
+			name:         "title",
+			defaultValue: "default title",
+			expected:     "The Title",
+		},
+		{
+			desc:         "existing description annotation",
+			name:         "description",
+			defaultValue: "default description",
+			expected:     "The description",
+		},
+		{
+			desc:         "existing custom annotation",
+			name:         "rationale",
+			defaultValue: "default rationale",
+			expected:     "The rationale",
+		},
+		{
+			desc:         "missing annotation returns default",
+			name:         "nonexistent",
+			defaultValue: "my default",
+			expected:     "my default",
+		},
+		{
+			desc:         "missing annotation with nil default",
+			name:         "nonexistent",
+			defaultValue: nil,
+			expected:     nil,
+		},
+		{
+			desc:         "missing annotation with empty string default",
+			name:         "nonexistent",
+			defaultValue: "",
+			expected:     "",
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.desc, func(t *testing.T) {
+			actual := rego.GetAnnotationOrDefault(tc.name, tc.defaultValue)
+			if actual != tc.expected {
+				t.Errorf("unexpected result. expected %v, actual %v", tc.expected, actual)
+			}
+		})
+	}
+}
+
+func TestGetAnnotationOrDefault_NilAnnotations(t *testing.T) {
+	rego := Rego{}
+
+	actual := rego.GetAnnotationOrDefault("title", "default value")
+	if actual != "default value" {
+		t.Errorf("expected default value when annotations is nil, got %v", actual)
+	}
+}

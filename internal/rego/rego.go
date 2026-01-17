@@ -236,6 +236,16 @@ func (r Rego) GetAnnotation(name string) (any, error) {
 	}
 }
 
+// GetAnnotationOrDefault returns the annotation value for the given name,
+// or the provided default value if the annotation doesn't exist.
+func (r Rego) GetAnnotationOrDefault(name string, defaultValue any) any {
+	val, err := r.GetAnnotation(name)
+	if err != nil {
+		return defaultValue
+	}
+	return val
+}
+
 func (r *Rego) parseAnnotations(annotations *ast.Annotations) error {
 	if annotations == nil {
 		return nil
