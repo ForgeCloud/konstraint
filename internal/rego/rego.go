@@ -75,6 +75,7 @@ const (
 	annoAnnotations    = "annotations"
 	annoLabels         = "labels"
 	annoLinks          = "links"
+	annoSyncData       = "syncData"
 )
 
 const (
@@ -110,6 +111,7 @@ type Rego struct {
 	annoExcludedNamespaceMatchers []string
 	annoLabelSelector             *metav1.LabelSelector
 	annoLinks                     []string
+	annoSyncData                  [][]SyncDataEntry
 }
 
 // Version returns the Rego language version of this policy.
@@ -120,6 +122,14 @@ func (r Rego) Version() Version {
 type AnnoKindMatcher struct {
 	APIGroups []string `json:"apiGroups,omitempty"`
 	Kinds     []string `json:"kinds,omitempty"`
+}
+
+// SyncDataEntry represents a single entry in the syncData annotation
+// used for Gatekeeper's metadata.gatekeeper.sh/requires-sync-data annotation.
+type SyncDataEntry struct {
+	Groups   []string `json:"groups,omitempty"`
+	Versions []string `json:"versions,omitempty"`
+	Kinds    []string `json:"kinds,omitempty"`
 }
 
 func (akm AnnoKindMatcher) String() string {
@@ -225,6 +235,26 @@ func (r Rego) AnnotationParameters() map[string]apiextensionsv1.JSONSchemaProps 
 // Supports both single string and array of strings in the annotation.
 func (r Rego) Links() []string {
 	return r.annoLinks
+}
+
+// SyncData returns the syncData entries for Gatekeeper's requires-sync-data annotation.
+// Returns [][]SyncDataEntry where outer array is AND, inner arrays are OR.
+func (r Rego) SyncData() [][]SyncDataEntry {
+	return r.annoSyncData
+}
+
+// SyncDataJSON returns the syncData as a pretty-printed JSON string
+// suitable for the metadata.gatekeeper.sh/requires-sync-data annotation.
+// Output matches the official Gatekeeper library format: double-nested array with outer quotes.
+func (r Rego) SyncDataJSON() (string, error) {
+	if len(r.annoSyncData) == 0 {
+		return "", nil
+	}
+	b, err := json.MarshalIndent(r.annoSyncData, "", "  ")
+	if err != nil {
+		return "", fmt.Errorf("marshal syncData: %w", err)
+	}
+	return "\"" + string(b) + "\"", nil
 }
 
 func (r Rego) GetAnnotation(name string) (any, error) {
@@ -354,6 +384,31 @@ func (r *Rego) parseAnnotations(annotations *ast.Annotations) error {
 		default:
 			return fmt.Errorf("supplied links value is not a string or array: %T", links)
 		}
+	}
+
+	syncData, ok := annotations.Custom[annoSyncData]
+	if ok && syncData != nil && syncData != "" {
+		if arr, isArr := syncData.([]any); isArr && len(arr) > 0 {
+			// detect nesting level:
+			// - flat list of objects [{...}, {...}] -> wrap as [[{...}, {...}]] (OR only)
+			// - nested list [[{...}], [{...}]] -> use as-is (AND + OR)
+			if _, isNested := arr[0].([]any); isNested {
+				// nested format: [[{...}], [{...}]]
+				sd, err := remarshal[[][]SyncDataEntry](syncData)
+				if err != nil {
+					return fmt.Errorf("unmarshal nested syncData: %w", err)
+				}
+				r.annoSyncData = sd
+			} else {
+				// flat format: [{...}, {...}] - wrap in outer array
+				sd, err := remarshal[[]SyncDataEntry](syncData)
+				if err != nil {
+					return fmt.Errorf("unmarshal flat syncData: %w", err)
+				}
+				r.annoSyncData = [][]SyncDataEntry{sd}
+			}
+		}
+		// empty array or other types are silently ignored
 	}
 
 	return nil

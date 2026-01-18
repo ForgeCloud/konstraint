@@ -533,3 +533,187 @@ foo = "bar" { true }
 		t.Errorf("expected no links, got %d", len(links))
 	}
 }
+
+func TestSyncData_Flat(t *testing.T) {
+	comments := `
+# METADATA
+# title: Test Policy
+# custom:
+#   syncData:
+#   - groups:
+#     - policy
+#     versions:
+#     - v1
+#     kinds:
+#     - PodDisruptionBudget
+#   - groups:
+#     - apps
+#     versions:
+#     - v1
+#     kinds:
+#     - Deployment
+#     - StatefulSet
+package foo
+foo = "bar" { true }
+`
+	rule, err := ast.ParseModuleWithOpts("", comments, ast.ParserOptions{ProcessAnnotation: true})
+	if err != nil {
+		t.Fatalf("Error parsing module: %s", err)
+	}
+
+	rego := Rego{annotations: rule.Annotations[0]}
+	err = rego.parseAnnotations(rule.Annotations[0])
+	if err != nil {
+		t.Fatalf("Error parsing annotations: %s", err)
+	}
+
+	syncData := rego.SyncData()
+	if len(syncData) != 1 {
+		t.Fatalf("expected 1 AND group (flat format), got %d", len(syncData))
+	}
+	if len(syncData[0]) != 2 {
+		t.Fatalf("expected 2 OR entries in first group, got %d", len(syncData[0]))
+	}
+
+	if syncData[0][0].Groups[0] != "policy" {
+		t.Errorf("expected groups[0] to be 'policy', got %q", syncData[0][0].Groups[0])
+	}
+	if syncData[0][0].Versions[0] != "v1" {
+		t.Errorf("expected versions[0] to be 'v1', got %q", syncData[0][0].Versions[0])
+	}
+	if syncData[0][0].Kinds[0] != "PodDisruptionBudget" {
+		t.Errorf("expected kinds[0] to be 'PodDisruptionBudget', got %q", syncData[0][0].Kinds[0])
+	}
+
+	if syncData[0][1].Groups[0] != "apps" {
+		t.Errorf("expected groups[0] to be 'apps', got %q", syncData[0][1].Groups[0])
+	}
+	if len(syncData[0][1].Kinds) != 2 {
+		t.Errorf("expected 2 kinds in second entry, got %d", len(syncData[0][1].Kinds))
+	}
+}
+
+func TestSyncData_Nested(t *testing.T) {
+	comments := `
+# METADATA
+# title: Test Policy
+# custom:
+#   syncData:
+#   - - groups:
+#       - extensions
+#       versions:
+#       - v1beta1
+#       kinds:
+#       - Ingress
+#     - groups:
+#       - networking.k8s.io
+#       versions:
+#       - v1beta1
+#       - v1
+#       kinds:
+#       - Ingress
+#   - - groups:
+#       - storage.k8s.io
+#       versions:
+#       - v1
+#       kinds:
+#       - StorageClass
+package foo
+foo = "bar" { true }
+`
+	rule, err := ast.ParseModuleWithOpts("", comments, ast.ParserOptions{ProcessAnnotation: true})
+	if err != nil {
+		t.Fatalf("Error parsing module: %s", err)
+	}
+
+	rego := Rego{annotations: rule.Annotations[0]}
+	err = rego.parseAnnotations(rule.Annotations[0])
+	if err != nil {
+		t.Fatalf("Error parsing annotations: %s", err)
+	}
+
+	syncData := rego.SyncData()
+	if len(syncData) != 2 {
+		t.Fatalf("expected 2 AND groups, got %d", len(syncData))
+	}
+
+	if len(syncData[0]) != 2 {
+		t.Fatalf("expected 2 OR entries in first AND group, got %d", len(syncData[0]))
+	}
+	if syncData[0][0].Groups[0] != "extensions" {
+		t.Errorf("expected first OR entry groups[0] to be 'extensions', got %q", syncData[0][0].Groups[0])
+	}
+	if syncData[0][1].Groups[0] != "networking.k8s.io" {
+		t.Errorf("expected second OR entry groups[0] to be 'networking.k8s.io', got %q", syncData[0][1].Groups[0])
+	}
+
+	if len(syncData[1]) != 1 {
+		t.Fatalf("expected 1 OR entry in second AND group, got %d", len(syncData[1]))
+	}
+	if syncData[1][0].Groups[0] != "storage.k8s.io" {
+		t.Errorf("expected groups[0] to be 'storage.k8s.io', got %q", syncData[1][0].Groups[0])
+	}
+}
+
+func TestSyncDataJSON(t *testing.T) {
+	comments := `
+# METADATA
+# title: Test Policy
+# custom:
+#   syncData:
+#   - groups:
+#     - policy
+#     versions:
+#     - v1
+#     kinds:
+#     - PodDisruptionBudget
+package foo
+foo = "bar" { true }
+`
+	rule, err := ast.ParseModuleWithOpts("", comments, ast.ParserOptions{ProcessAnnotation: true})
+	if err != nil {
+		t.Fatalf("Error parsing module: %s", err)
+	}
+
+	rego := Rego{annotations: rule.Annotations[0]}
+	err = rego.parseAnnotations(rule.Annotations[0])
+	if err != nil {
+		t.Fatalf("Error parsing annotations: %s", err)
+	}
+
+	jsonStr, err := rego.SyncDataJSON()
+	if err != nil {
+		t.Fatalf("Error getting SyncDataJSON: %s", err)
+	}
+
+	expected := "\"[\n  [\n    {\n      \"groups\": [\n        \"policy\"\n      ],\n      \"versions\": [\n        \"v1\"\n      ],\n      \"kinds\": [\n        \"PodDisruptionBudget\"\n      ]\n    }\n  ]\n]\""
+	if jsonStr != expected {
+		t.Errorf("unexpected JSON output.\nexpected:\n%s\n\nactual:\n%s", expected, jsonStr)
+	}
+}
+
+func TestSyncData_NoSyncData(t *testing.T) {
+	rule, err := ast.ParseModuleWithOpts("", minimalTestPolicy, ast.ParserOptions{ProcessAnnotation: true})
+	if err != nil {
+		t.Fatalf("Error parsing module: %s", err)
+	}
+
+	rego := Rego{annotations: rule.Annotations[0]}
+	err = rego.parseAnnotations(rule.Annotations[0])
+	if err != nil {
+		t.Fatalf("Error parsing annotations: %s", err)
+	}
+
+	syncData := rego.SyncData()
+	if len(syncData) != 0 {
+		t.Errorf("expected no syncData, got %d", len(syncData))
+	}
+
+	jsonStr, err := rego.SyncDataJSON()
+	if err != nil {
+		t.Fatalf("Error getting SyncDataJSON: %s", err)
+	}
+	if jsonStr != "" {
+		t.Errorf("expected empty string for SyncDataJSON, got %q", jsonStr)
+	}
+}

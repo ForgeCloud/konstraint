@@ -184,3 +184,35 @@ You can specify documentation links using the `links` annotation. Both single st
 ```
 
 In custom templates, access via `{{ .Policy.Links }}` which returns a `[]string`.
+
+## Sync Data for Referential Constraints
+
+For policies that require data from other Kubernetes resources, use the `syncData` annotation to specify what Gatekeeper should cache. This populates the `metadata.gatekeeper.sh/requires-sync-data` annotation.
+
+```rego
+# METADATA
+# title: Unique Ingress Host
+# custom:
+#   syncData:
+#   - groups: ["networking.k8s.io"]
+#     versions: ["v1"]
+#     kinds: ["Ingress"]
+```
+
+For complex AND/OR logic, use nested arrays:
+
+```rego
+# custom:
+#   syncData:
+#   - - groups: ["extensions"]        # OR group 1
+#       versions: ["v1beta1"]
+#       kinds: ["Ingress"]
+#     - groups: ["networking.k8s.io"]
+#       versions: ["v1"]
+#       kinds: ["Ingress"]
+#   - - groups: ["storage.k8s.io"]    # AND with above
+#       versions: ["v1"]
+#       kinds: ["StorageClass"]
+```
+
+The format is `[ [{}OR{}] AND [{}OR{}] ]`. In custom templates, use `{{ .Policy.SyncDataJSON }}` for the properly formatted annotation value.
