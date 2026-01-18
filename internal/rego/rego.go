@@ -76,6 +76,7 @@ const (
 	annoLabels         = "labels"
 	annoLinks          = "links"
 	annoSyncData       = "syncData"
+	annoConstraints    = "constraints"
 )
 
 const (
@@ -112,6 +113,7 @@ type Rego struct {
 	annoLabelSelector             *metav1.LabelSelector
 	annoLinks                     []string
 	annoSyncData                  [][]SyncDataEntry
+	annoConstraints               []ConstraintConfig
 }
 
 // Version returns the Rego language version of this policy.
@@ -130,6 +132,18 @@ type SyncDataEntry struct {
 	Groups   []string `json:"groups,omitempty"`
 	Versions []string `json:"versions,omitempty"`
 	Kinds    []string `json:"kinds,omitempty"`
+}
+
+// ConstraintConfig represents a constraint configuration for documenting
+// multiple constraint variations from a single policy template.
+type ConstraintConfig struct {
+	Name               string            `json:"name"`
+	Description        string            `json:"description,omitempty"`
+	Enforcement        string            `json:"enforcement,omitempty"`
+	Kinds              []AnnoKindMatcher `json:"kinds,omitempty"`
+	Namespaces         []string          `json:"namespaces,omitempty"`
+	ExcludedNamespaces []string          `json:"excludedNamespaces,omitempty"`
+	Parameters         map[string]any    `json:"parameters,omitempty"`
 }
 
 func (akm AnnoKindMatcher) String() string {
@@ -255,6 +269,12 @@ func (r Rego) SyncDataJSON() (string, error) {
 		return "", fmt.Errorf("marshal syncData: %w", err)
 	}
 	return "\"" + string(b) + "\"", nil
+}
+
+// Constraints returns the constraint configurations for documenting multiple
+// constraint variations from a single policy template.
+func (r Rego) Constraints() []ConstraintConfig {
+	return r.annoConstraints
 }
 
 func (r Rego) GetAnnotation(name string) (any, error) {
@@ -409,6 +429,15 @@ func (r *Rego) parseAnnotations(annotations *ast.Annotations) error {
 			}
 		}
 		// empty array or other types are silently ignored
+	}
+
+	constraints, ok := annotations.Custom[annoConstraints]
+	if ok {
+		c, err := remarshal[[]ConstraintConfig](constraints)
+		if err != nil {
+			return fmt.Errorf("unmarshal constraints: %w", err)
+		}
+		r.annoConstraints = c
 	}
 
 	return nil

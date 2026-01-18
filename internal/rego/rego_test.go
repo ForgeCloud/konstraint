@@ -7,6 +7,13 @@ import (
 	"github.com/open-policy-agent/opa/ast"
 )
 
+const minimalTestPolicy = `
+# METADATA
+# title: Test Policy
+package foo
+foo = "bar" { true }
+`
+
 func TestKind(t *testing.T) {
 	policy := Rego{
 		path: "some/path/my-policy/src.rego",
@@ -511,13 +518,7 @@ foo = "bar" { true }
 }
 
 func TestLinks_NoLinks(t *testing.T) {
-	comments := `
-# METADATA
-# title: Test Policy
-package foo
-foo = "bar" { true }
-`
-	rule, err := ast.ParseModuleWithOpts("", comments, ast.ParserOptions{ProcessAnnotation: true})
+	rule, err := ast.ParseModuleWithOpts("", minimalTestPolicy, ast.ParserOptions{ProcessAnnotation: true})
 	if err != nil {
 		t.Fatalf("Error parsing module: %s", err)
 	}
@@ -715,5 +716,100 @@ func TestSyncData_NoSyncData(t *testing.T) {
 	}
 	if jsonStr != "" {
 		t.Errorf("expected empty string for SyncDataJSON, got %q", jsonStr)
+	}
+}
+
+func TestConstraints(t *testing.T) {
+	comments := `
+# METADATA
+# title: Test Policy
+# custom:
+#   constraints:
+#   - name: prod-deployments
+#     description: Strict limits for production
+#     enforcement: deny
+#     kinds:
+#     - apiGroups:
+#       - apps
+#       kinds:
+#       - Deployment
+#     namespaces:
+#     - production
+#     parameters:
+#       maxReplicas: 10
+#   - name: dev-configmaps
+#     enforcement: warn
+#     kinds:
+#     - apiGroups:
+#       - ""
+#       kinds:
+#       - ConfigMap
+#     excludedNamespaces:
+#     - kube-system
+#     parameters:
+#       maxSize: 1048576
+package foo
+foo = "bar" { true }
+`
+	rule, err := ast.ParseModuleWithOpts("", comments, ast.ParserOptions{ProcessAnnotation: true})
+	if err != nil {
+		t.Fatalf("Error parsing module: %s", err)
+	}
+
+	rego := Rego{annotations: rule.Annotations[0]}
+	err = rego.parseAnnotations(rule.Annotations[0])
+	if err != nil {
+		t.Fatalf("Error parsing annotations: %s", err)
+	}
+
+	constraints := rego.Constraints()
+	if len(constraints) != 2 {
+		t.Fatalf("expected 2 constraints, got %d", len(constraints))
+	}
+
+	c1 := constraints[0]
+	if c1.Name != "prod-deployments" {
+		t.Errorf("expected name 'prod-deployments', got %q", c1.Name)
+	}
+	if c1.Description != "Strict limits for production" {
+		t.Errorf("expected description, got %q", c1.Description)
+	}
+	if c1.Enforcement != "deny" {
+		t.Errorf("expected enforcement 'deny', got %q", c1.Enforcement)
+	}
+	if len(c1.Kinds) != 1 || c1.Kinds[0].APIGroups[0] != "apps" {
+		t.Errorf("expected kinds with apiGroup 'apps', got %v", c1.Kinds)
+	}
+	if len(c1.Namespaces) != 1 || c1.Namespaces[0] != "production" {
+		t.Errorf("expected namespaces ['production'], got %v", c1.Namespaces)
+	}
+
+	c2 := constraints[1]
+	if c2.Name != "dev-configmaps" {
+		t.Errorf("expected name 'dev-configmaps', got %q", c2.Name)
+	}
+	if c2.Enforcement != "warn" {
+		t.Errorf("expected enforcement 'warn', got %q", c2.Enforcement)
+	}
+	if len(c2.ExcludedNamespaces) != 1 || c2.ExcludedNamespaces[0] != "kube-system" {
+		t.Errorf("expected excludedNamespaces ['kube-system'], got %v", c2.ExcludedNamespaces)
+	}
+}
+
+func TestConstraints_NoConstraints(t *testing.T) {
+	rule, err := ast.ParseModuleWithOpts("", minimalTestPolicy, ast.ParserOptions{ProcessAnnotation: true})
+	if err != nil {
+		t.Fatalf("Error parsing module: %s", err)
+	}
+
+	rego := Rego{annotations: rule.Annotations[0]}
+	err = rego.parseAnnotations(rule.Annotations[0])
+	if err != nil {
+		t.Fatalf("Error parsing annotations: %s", err)
+	}
+
+	constraints := rego.Constraints()
+	if len(constraints) != 0 {
+		t.Errorf("expected no constraints, got %d", len(constraints))
 	}
 }

@@ -216,3 +216,48 @@ For complex AND/OR logic, use nested arrays:
 ```
 
 The format is `[ [{}OR{}] AND [{}OR{}] ]`. In custom templates, use `{{ .Policy.SyncDataJSON }}` for the properly formatted annotation value.
+
+## Multiple Constraint Configurations
+
+To document multiple constraint variations from a single policy template, use the `constraints` annotation:
+
+```rego
+# METADATA
+# title: Resource Limits
+# custom:
+#   constraints:
+#   - name: prod-deployments
+#     description: Strict limits for production
+#     enforcement: deny
+#     kinds:
+#     - apiGroups:
+#       - apps
+#       kinds:
+#       - Deployment
+#     namespaces:
+#     - production
+#     parameters:
+#       maxReplicas: 5
+#   - name: dev-deployments
+#     enforcement: warn
+#     kinds:
+#     - apiGroups:
+#       - apps
+#       kinds:
+#       - Deployment
+#     excludedNamespaces:
+#     - kube-system
+#     parameters:
+#       maxReplicas: 100
+```
+
+Each constraint config supports:
+- `name` - constraint name
+- `description` - optional description
+- `enforcement` - `deny`, `warn`, or `dryrun`
+- `kinds` - kind matchers (same format as policy-level matchers)
+- `namespaces` - namespace list
+- `excludedNamespaces` - excluded namespace list
+- `parameters` - parameter values
+
+In custom templates, iterate with `{{ range .Policy.Constraints }}`.
