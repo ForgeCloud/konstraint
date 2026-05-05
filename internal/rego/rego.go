@@ -3,10 +3,12 @@ package rego
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 
@@ -17,6 +19,38 @@ import (
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
+
+// Version represents the Rego language version.
+type Version int
+
+const (
+	// V0 is the default Rego version (legacy syntax)
+	V0 Version = iota
+	// V1 is the new Rego v1 syntax (OPA v1.0+)
+	V1
+)
+
+// String returns the string representation of the Version.
+func (v Version) String() string {
+	switch v {
+	case V1:
+		return "v1"
+	default:
+		return "v0"
+	}
+}
+
+// ParseVersion parses a string into a Version.
+func ParseVersion(s string) (Version, error) {
+	switch strings.ToLower(s) {
+	case "v0":
+		return V0, nil
+	case "v1":
+		return V1, nil
+	default:
+		return V0, fmt.Errorf("invalid rego version: %s (must be v0 or v1)", s)
+	}
+}
 
 // Severity describes the severity level of the rego file.
 type Severity string
@@ -40,6 +74,9 @@ const (
 	annoSkipConstraint = "skipConstraint"
 	annoAnnotations    = "annotations"
 	annoLabels         = "labels"
+	annoLinks          = "links"
+	annoSyncData       = "syncData"
+	annoConstraints    = "constraints"
 )
 
 const (
@@ -64,6 +101,7 @@ type Rego struct {
 	skipTemplate   bool
 	skipConstraint bool
 	metaData       *MetaData
+	regoVersion    Version
 	// Duplicate data from OPA Metadata annotations.
 	annotations                   *ast.Annotations
 	annoTitle                     string
@@ -73,11 +111,39 @@ type Rego struct {
 	annoNamespaceMatchers         []string
 	annoExcludedNamespaceMatchers []string
 	annoLabelSelector             *metav1.LabelSelector
+	annoLinks                     []string
+	annoSyncData                  [][]SyncDataEntry
+	annoConstraints               []ConstraintConfig
+}
+
+// Version returns the Rego language version of this policy.
+func (r Rego) Version() Version {
+	return r.regoVersion
 }
 
 type AnnoKindMatcher struct {
 	APIGroups []string `json:"apiGroups,omitempty"`
 	Kinds     []string `json:"kinds,omitempty"`
+}
+
+// SyncDataEntry represents a single entry in the syncData annotation
+// used for Gatekeeper's metadata.gatekeeper.sh/requires-sync-data annotation.
+type SyncDataEntry struct {
+	Groups   []string `json:"groups,omitempty"`
+	Versions []string `json:"versions,omitempty"`
+	Kinds    []string `json:"kinds,omitempty"`
+}
+
+// ConstraintConfig represents a constraint configuration for documenting
+// multiple constraint variations from a single policy template.
+type ConstraintConfig struct {
+	Name               string            `json:"name"`
+	Description        string            `json:"description,omitempty"`
+	Enforcement        string            `json:"enforcement,omitempty"`
+	Kinds              []AnnoKindMatcher `json:"kinds,omitempty"`
+	Namespaces         []string          `json:"namespaces,omitempty"`
+	ExcludedNamespaces []string          `json:"excludedNamespaces,omitempty"`
+	Parameters         map[string]any    `json:"parameters,omitempty"`
 }
 
 func (akm AnnoKindMatcher) String() string {
@@ -104,19 +170,19 @@ type Parameter struct {
 // GetAllSeverities gets all of the rego files found in the given directory as
 // well as any subdirectories. Only rego files that contain a valid severity
 // will be returned.
-func GetAllSeverities(directory string) ([]Rego, error) {
-	return getAllSeverities(directory, true)
+func GetAllSeverities(directory string, regoVersion Version) ([]Rego, error) {
+	return getAllSeverities(directory, true, regoVersion)
 }
 
 // GetAllSeveritiesWithoutImports gets all of the Rego files found in the given
 // directory as well as any subdirectories, but does not attempt to parse the
 // imports.
-func GetAllSeveritiesWithoutImports(directory string) ([]Rego, error) {
-	return getAllSeverities(directory, false)
+func GetAllSeveritiesWithoutImports(directory string, regoVersion Version) ([]Rego, error) {
+	return getAllSeverities(directory, false, regoVersion)
 }
 
-func getAllSeverities(directory string, parseImports bool) ([]Rego, error) {
-	regos, err := parseDirectory(directory, parseImports)
+func getAllSeverities(directory string, parseImports bool, regoVersion Version) ([]Rego, error) {
+	regos, err := parseDirectory(directory, parseImports, regoVersion)
 	if err != nil {
 		return nil, fmt.Errorf("parse directory: %w", err)
 	}
@@ -136,8 +202,8 @@ func getAllSeverities(directory string, parseImports bool) ([]Rego, error) {
 // GetViolations gets all of the files found in the given directory as well as
 // any subdirectories. Only rego files that have a severity of violation will
 // be returned.
-func GetViolations(directory string) ([]Rego, error) {
-	regos, err := parseDirectory(directory, true)
+func GetViolations(directory string, regoVersion Version) ([]Rego, error) {
+	regos, err := parseDirectory(directory, true, regoVersion)
 	if err != nil {
 		return nil, fmt.Errorf("parse directory: %w", err)
 	}
@@ -179,9 +245,41 @@ func (r Rego) AnnotationParameters() map[string]apiextensionsv1.JSONSchemaProps 
 	return r.annoParameters
 }
 
+// Links returns the links defined in the policy annotations.
+// Supports both single string and array of strings in the annotation.
+func (r Rego) Links() []string {
+	return r.annoLinks
+}
+
+// SyncData returns the syncData entries for Gatekeeper's requires-sync-data annotation.
+// Returns [][]SyncDataEntry where outer array is AND, inner arrays are OR.
+func (r Rego) SyncData() [][]SyncDataEntry {
+	return r.annoSyncData
+}
+
+// SyncDataJSON returns the syncData as a pretty-printed JSON string
+// suitable for the metadata.gatekeeper.sh/requires-sync-data annotation.
+// Output matches the official Gatekeeper library format: double-nested array with outer quotes.
+func (r Rego) SyncDataJSON() (string, error) {
+	if len(r.annoSyncData) == 0 {
+		return "", nil
+	}
+	b, err := json.MarshalIndent(r.annoSyncData, "", "  ")
+	if err != nil {
+		return "", fmt.Errorf("marshal syncData: %w", err)
+	}
+	return "\"" + string(b) + "\"", nil
+}
+
+// Constraints returns the constraint configurations for documenting multiple
+// constraint variations from a single policy template.
+func (r Rego) Constraints() []ConstraintConfig {
+	return r.annoConstraints
+}
+
 func (r Rego) GetAnnotation(name string) (any, error) {
 	if r.annotations == nil {
-		return nil, fmt.Errorf("no annotations set")
+		return nil, errors.New("no annotations set")
 	}
 	switch name {
 	case "title":
@@ -194,6 +292,16 @@ func (r Rego) GetAnnotation(name string) (any, error) {
 		}
 		return nil, fmt.Errorf("couldn't lookup %s in annotations", name)
 	}
+}
+
+// GetAnnotationOrDefault returns the annotation value for the given name,
+// or the provided default value if the annotation doesn't exist.
+func (r Rego) GetAnnotationOrDefault(name string, defaultValue any) any {
+	val, err := r.GetAnnotation(name)
+	if err != nil {
+		return defaultValue
+	}
+	return val
 }
 
 func (r *Rego) parseAnnotations(annotations *ast.Annotations) error {
@@ -250,9 +358,9 @@ func (r *Rego) parseAnnotations(annotations *ast.Annotations) error {
 
 	metaAnnotations, ok := annotations.Custom[annoAnnotations]
 	if ok {
-		a, ok := metaAnnotations.(map[string]interface{})
+		a, ok := metaAnnotations.(map[string]any)
 		if !ok {
-			return fmt.Errorf("supplied annotations value is not a map[string]interface{}: %T", metaAnnotations)
+			return fmt.Errorf("supplied annotations value is not a map[string]any: %T", metaAnnotations)
 		}
 		if r.metaData == nil {
 			r.metaData = &MetaData{}
@@ -266,9 +374,9 @@ func (r *Rego) parseAnnotations(annotations *ast.Annotations) error {
 
 	metaLabels, ok := annotations.Custom[annoLabels]
 	if ok {
-		l, ok := metaLabels.(map[string]interface{})
+		l, ok := metaLabels.(map[string]any)
 		if !ok {
-			return fmt.Errorf("supplied labels value is not a map[string]interface{}: %T", metaLabels)
+			return fmt.Errorf("supplied labels value is not a map[string]any: %T", metaLabels)
 		}
 		if r.metaData == nil {
 			r.metaData = &MetaData{}
@@ -280,10 +388,62 @@ func (r *Rego) parseAnnotations(annotations *ast.Annotations) error {
 		r.metaData.Labels = labels
 	}
 
+	links, ok := annotations.Custom[annoLinks]
+	if ok {
+		switch v := links.(type) {
+		case string:
+			if v != "" {
+				r.annoLinks = []string{v}
+			}
+		case []any:
+			for _, item := range v {
+				if s, ok := item.(string); ok {
+					r.annoLinks = append(r.annoLinks, s)
+				}
+			}
+		default:
+			return fmt.Errorf("supplied links value is not a string or array: %T", links)
+		}
+	}
+
+	syncData, ok := annotations.Custom[annoSyncData]
+	if ok && syncData != nil && syncData != "" {
+		if arr, isArr := syncData.([]any); isArr && len(arr) > 0 {
+			// detect nesting level:
+			// - flat list of objects [{...}, {...}] -> wrap as [[{...}, {...}]] (OR only)
+			// - nested list [[{...}], [{...}]] -> use as-is (AND + OR)
+			if _, isNested := arr[0].([]any); isNested {
+				// nested format: [[{...}], [{...}]]
+				sd, err := remarshal[[][]SyncDataEntry](syncData)
+				if err != nil {
+					return fmt.Errorf("unmarshal nested syncData: %w", err)
+				}
+				r.annoSyncData = sd
+			} else {
+				// flat format: [{...}, {...}] - wrap in outer array
+				sd, err := remarshal[[]SyncDataEntry](syncData)
+				if err != nil {
+					return fmt.Errorf("unmarshal flat syncData: %w", err)
+				}
+				r.annoSyncData = [][]SyncDataEntry{sd}
+			}
+		}
+		// empty array or other types are silently ignored
+	}
+
+	constraints, ok := annotations.Custom[annoConstraints]
+	if ok {
+		c, err := remarshal[[]ConstraintConfig](constraints)
+		if err != nil {
+			return fmt.Errorf("unmarshal constraints: %w", err)
+		}
+		r.annoConstraints = c
+	}
+
 	return nil
 }
 
-func switchToMap(in map[string]interface{}) (map[string]string, error) {
+func switchToMap(in map[string]any) (map[string]string, error) {
 	out := map[string]string{}
 	for k, v := range in {
 		switch c := v.(type) {
@@ -449,6 +609,35 @@ func (r Rego) Source() string {
 	return removeComments(r.sanitizedRaw)
 }
 
+var v0Imports = []string{
+	"import future.keywords.contains",
+	"import future.keywords.every",
+	"import future.keywords.if",
+	"import future.keywords.in",
+	"import future.keywords",
+	"import rego.v1",
+}
+
+// StripV1Imports removes v0 compatibility imports from Rego source code
+// since these are not needed in OPA v1.
+func StripV1Imports(source string) string {
+	var lines []string
+	prevBlank := false
+	for line := range strings.SplitSeq(source, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if slices.Contains(v0Imports, trimmed) {
+			continue
+		}
+		isBlank := trimmed == ""
+		if isBlank && prevBlank {
+			continue
+		}
+		prevBlank = isBlank
+		lines = append(lines, line)
+	}
+	return strings.Join(lines, "\n")
+}
+
 // FullSource returns the original source code inside
 // of the rego file including comments except the header
 func (r Rego) FullSource() string {
@@ -490,21 +679,24 @@ func (r Rego) SkipConstraint() bool {
 	return r.skipConstraint
 }
 
-func parseDirectory(directory string, parseImports bool) ([]Rego, error) {
-	// Recursively find all rego files (ignoring test files), starting at the given directory.
-	result, err := loader.NewFileLoader().
-		WithProcessAnnotation(true).
-		Filtered([]string{directory}, func(_ string, info os.FileInfo, _ int) bool {
-			if strings.HasSuffix(info.Name(), "_test.rego") {
-				return true
-			}
+func parseDirectory(directory string, parseImports bool, regoVersion Version) ([]Rego, error) {
+	fileLoader := loader.NewFileLoader().WithProcessAnnotation(true)
 
-			if !info.IsDir() && filepath.Ext(info.Name()) != ".rego" {
-				return true
-			}
+	if regoVersion == V1 {
+		fileLoader = fileLoader.WithRegoVersion(ast.RegoV1)
+	}
 
-			return false
-		})
+	result, err := fileLoader.Filtered([]string{directory}, func(_ string, info os.FileInfo, _ int) bool {
+		if strings.HasSuffix(info.Name(), "_test.rego") {
+			return true
+		}
+
+		if !info.IsDir() && filepath.Ext(info.Name()) != ".rego" {
+			return true
+		}
+
+		return false
+	})
 	if err != nil {
 		return nil, fmt.Errorf("filter rego files: %w", err)
 	}
@@ -557,7 +749,6 @@ func parseDirectory(directory string, parseImports bool) ([]Rego, error) {
 			if len(paramsDiff) > 0 {
 				return nil, fmt.Errorf("missing definitions for parameters %v found in the policy `%s`", paramsDiff, file.Name)
 			}
-
 		}
 		rego := Rego{
 			id:           getPolicyID(file.Parsed.Rules),
@@ -567,6 +758,7 @@ func parseDirectory(directory string, parseImports bool) ([]Rego, error) {
 			raw:          string(file.Raw),
 			sanitizedRaw: sanitizeRawSource(file.Raw),
 			annotations:  annotations,
+			regoVersion:  regoVersion,
 		}
 
 		if annotations != nil {
@@ -625,8 +817,7 @@ func getHeaderParams(annotations *ast.Annotations) []Parameter {
 func trimEachLine(raw string) string {
 	var result string
 
-	lines := strings.Split(raw, "\n")
-	for _, line := range lines {
+	for line := range strings.SplitSeq(raw, "\n") {
 		result += strings.TrimRight(line, "\t ") + "\n"
 	}
 
@@ -635,8 +826,7 @@ func trimEachLine(raw string) string {
 
 func removeComments(raw string) string {
 	var regoWithoutComments string
-	lines := strings.Split(raw, "\n")
-	for _, line := range lines {
+	for line := range strings.SplitSeq(raw, "\n") {
 		if strings.HasPrefix(line, "#") {
 			continue
 		}

@@ -7,6 +7,13 @@ import (
 	"github.com/open-policy-agent/opa/ast"
 )
 
+const minimalTestPolicy = `
+# METADATA
+# title: Test Policy
+package foo
+foo = "bar" { true }
+`
+
 func TestKind(t *testing.T) {
 	policy := Rego{
 		path: "some/path/my-policy/src.rego",
@@ -172,6 +179,140 @@ func TestGetPolicyID_Null(t *testing.T) {
 	}
 }
 
+func TestParseVersion(t *testing.T) {
+	testCases := []struct {
+		input    string
+		expected Version
+		wantErr  bool
+	}{
+		{"v0", V0, false},
+		{"v1", V1, false},
+		{"V0", V0, false},
+		{"V1", V1, false},
+		{"invalid", V0, true},
+		{"", V0, true},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.input, func(t *testing.T) {
+			actual, err := ParseVersion(tc.input)
+			if tc.wantErr && err == nil {
+				t.Errorf("expected error for input %q", tc.input)
+			}
+			if !tc.wantErr && err != nil {
+				t.Errorf("unexpected error for input %q: %v", tc.input, err)
+			}
+			if actual != tc.expected {
+				t.Errorf("unexpected Version. expected %v, actual %v", tc.expected, actual)
+			}
+		})
+	}
+}
+
+func TestStripV1Imports(t *testing.T) {
+	testCases := []struct {
+		desc     string
+		input    string
+		expected string
+	}{
+		{
+			desc: "strip future.keywords.if",
+			input: `package test
+import future.keywords.if
+violation if { true }`,
+			expected: `package test
+violation if { true }`,
+		},
+		{
+			desc: "strip future.keywords.contains",
+			input: `package test
+import future.keywords.contains
+violation contains msg if { msg := "x" }`,
+			expected: `package test
+violation contains msg if { msg := "x" }`,
+		},
+		{
+			desc: "strip future.keywords (all)",
+			input: `package test
+import future.keywords
+violation contains msg if { msg := "x" }`,
+			expected: `package test
+violation contains msg if { msg := "x" }`,
+		},
+		{
+			desc: "strip future.keywords.in",
+			input: `package test
+import future.keywords.in
+violation if { "a" in ["a", "b"] }`,
+			expected: `package test
+violation if { "a" in ["a", "b"] }`,
+		},
+		{
+			desc: "strip future.keywords.every",
+			input: `package test
+import future.keywords.every
+violation if { every x in [1, 2] { x > 0 } }`,
+			expected: `package test
+violation if { every x in [1, 2] { x > 0 } }`,
+		},
+		{
+			desc: "strip rego.v1",
+			input: `package test
+import rego.v1
+violation if { true }`,
+			expected: `package test
+violation if { true }`,
+		},
+		{
+			desc: "preserve other imports",
+			input: `package test
+import future.keywords.if
+import data.lib.core
+violation if { core.something }`,
+			expected: `package test
+import data.lib.core
+violation if { core.something }`,
+		},
+		{
+			desc: "no future imports",
+			input: `package test
+import data.lib.core
+violation if { true }`,
+			expected: `package test
+import data.lib.core
+violation if { true }`,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.desc, func(t *testing.T) {
+			actual := StripV1Imports(tc.input)
+			if actual != tc.expected {
+				t.Errorf("unexpected result.\nexpected:\n%v\n\nactual:\n%v", tc.expected, actual)
+			}
+		})
+	}
+}
+
+func TestGetViolationsV1(t *testing.T) {
+	violations, err := GetViolations("../../test/policies", V1)
+	if err != nil {
+		t.Fatalf("Error getting v1 violations: %v", err)
+	}
+
+	if len(violations) != 3 {
+		t.Fatalf("Expected 3 violations, got %d", len(violations))
+	}
+
+	if violations[0].Title() != "The title" {
+		t.Errorf("unexpected Title. expected %q, actual %q", "The title", violations[0].Title())
+	}
+
+	if violations[0].Version() != V1 {
+		t.Errorf("unexpected Version. expected %v, actual %v", V1, violations[0].Version())
+	}
+}
+
 func TestGetRuleParamNamesFromInput(t *testing.T) {
 	testCases := []struct {
 		desc string
@@ -218,5 +359,457 @@ func TestGetRuleParamNamesFromInput(t *testing.T) {
 				t.Errorf("unexpected bodyParams. expected %+v, actual %+v", tc.want, actual)
 			}
 		})
+	}
+}
+
+func TestGetAnnotationOrDefault(t *testing.T) {
+	comments := `
+# METADATA
+# title: The Title
+# description: The description
+# custom:
+#   rationale: The rationale
+package foo
+foo = "bar" { true }
+`
+	rule, err := ast.ParseModuleWithOpts("", comments, ast.ParserOptions{ProcessAnnotation: true})
+	if err != nil {
+		t.Fatalf("Error parsing module: %s", err)
+	}
+
+	rego := Rego{annotations: rule.Annotations[0]}
+	err = rego.parseAnnotations(rule.Annotations[0])
+	if err != nil {
+		t.Fatalf("Error parsing annotations: %s", err)
+	}
+
+	testCases := []struct {
+		desc         string
+		name         string
+		defaultValue any
+		expected     any
+	}{
+		{
+			desc:         "existing title annotation",
+			name:         "title",
+			defaultValue: "default title",
+			expected:     "The Title",
+		},
+		{
+			desc:         "existing description annotation",
+			name:         "description",
+			defaultValue: "default description",
+			expected:     "The description",
+		},
+		{
+			desc:         "existing custom annotation",
+			name:         "rationale",
+			defaultValue: "default rationale",
+			expected:     "The rationale",
+		},
+		{
+			desc:         "missing annotation returns default",
+			name:         "nonexistent",
+			defaultValue: "my default",
+			expected:     "my default",
+		},
+		{
+			desc:         "missing annotation with nil default",
+			name:         "nonexistent",
+			defaultValue: nil,
+			expected:     nil,
+		},
+		{
+			desc:         "missing annotation with empty string default",
+			name:         "nonexistent",
+			defaultValue: "",
+			expected:     "",
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.desc, func(t *testing.T) {
+			actual := rego.GetAnnotationOrDefault(tc.name, tc.defaultValue)
+			if actual != tc.expected {
+				t.Errorf("unexpected result. expected %v, actual %v", tc.expected, actual)
+			}
+		})
+	}
+}
+
+func TestGetAnnotationOrDefault_NilAnnotations(t *testing.T) {
+	rego := Rego{}
+
+	actual := rego.GetAnnotationOrDefault("title", "default value")
+	if actual != "default value" {
+		t.Errorf("expected default value when annotations is nil, got %v", actual)
+	}
+}
+
+func TestLinks_Array(t *testing.T) {
+	comments := `
+# METADATA
+# title: Test Policy
+# custom:
+#   links:
+#   - https://example.com/link1
+#   - https://example.com/link2
+#   - https://example.com/link3
+package foo
+foo = "bar" { true }
+`
+	rule, err := ast.ParseModuleWithOpts("", comments, ast.ParserOptions{ProcessAnnotation: true})
+	if err != nil {
+		t.Fatalf("Error parsing module: %s", err)
+	}
+
+	rego := Rego{annotations: rule.Annotations[0]}
+	err = rego.parseAnnotations(rule.Annotations[0])
+	if err != nil {
+		t.Fatalf("Error parsing annotations: %s", err)
+	}
+
+	links := rego.Links()
+	expected := []string{
+		"https://example.com/link1",
+		"https://example.com/link2",
+		"https://example.com/link3",
+	}
+
+	if len(links) != len(expected) {
+		t.Fatalf("expected %d links, got %d", len(expected), len(links))
+	}
+
+	for i, link := range links {
+		if link != expected[i] {
+			t.Errorf("link[%d]: expected %q, got %q", i, expected[i], link)
+		}
+	}
+}
+
+func TestLinks_SingleString(t *testing.T) {
+	comments := `
+# METADATA
+# title: Test Policy
+# custom:
+#   links: https://example.com/single-link
+package foo
+foo = "bar" { true }
+`
+	rule, err := ast.ParseModuleWithOpts("", comments, ast.ParserOptions{ProcessAnnotation: true})
+	if err != nil {
+		t.Fatalf("Error parsing module: %s", err)
+	}
+
+	rego := Rego{annotations: rule.Annotations[0]}
+	err = rego.parseAnnotations(rule.Annotations[0])
+	if err != nil {
+		t.Fatalf("Error parsing annotations: %s", err)
+	}
+
+	links := rego.Links()
+	if len(links) != 1 {
+		t.Fatalf("expected 1 link, got %d", len(links))
+	}
+
+	if links[0] != "https://example.com/single-link" {
+		t.Errorf("expected %q, got %q", "https://example.com/single-link", links[0])
+	}
+}
+
+func TestLinks_NoLinks(t *testing.T) {
+	rule, err := ast.ParseModuleWithOpts("", minimalTestPolicy, ast.ParserOptions{ProcessAnnotation: true})
+	if err != nil {
+		t.Fatalf("Error parsing module: %s", err)
+	}
+
+	rego := Rego{annotations: rule.Annotations[0]}
+	err = rego.parseAnnotations(rule.Annotations[0])
+	if err != nil {
+		t.Fatalf("Error parsing annotations: %s", err)
+	}
+
+	links := rego.Links()
+	if len(links) != 0 {
+		t.Errorf("expected no links, got %d", len(links))
+	}
+}
+
+func TestSyncData_Flat(t *testing.T) {
+	comments := `
+# METADATA
+# title: Test Policy
+# custom:
+#   syncData:
+#   - groups:
+#     - policy
+#     versions:
+#     - v1
+#     kinds:
+#     - PodDisruptionBudget
+#   - groups:
+#     - apps
+#     versions:
+#     - v1
+#     kinds:
+#     - Deployment
+#     - StatefulSet
+package foo
+foo = "bar" { true }
+`
+	rule, err := ast.ParseModuleWithOpts("", comments, ast.ParserOptions{ProcessAnnotation: true})
+	if err != nil {
+		t.Fatalf("Error parsing module: %s", err)
+	}
+
+	rego := Rego{annotations: rule.Annotations[0]}
+	err = rego.parseAnnotations(rule.Annotations[0])
+	if err != nil {
+		t.Fatalf("Error parsing annotations: %s", err)
+	}
+
+	syncData := rego.SyncData()
+	if len(syncData) != 1 {
+		t.Fatalf("expected 1 AND group (flat format), got %d", len(syncData))
+	}
+	if len(syncData[0]) != 2 {
+		t.Fatalf("expected 2 OR entries in first group, got %d", len(syncData[0]))
+	}
+
+	if syncData[0][0].Groups[0] != "policy" {
+		t.Errorf("expected groups[0] to be 'policy', got %q", syncData[0][0].Groups[0])
+	}
+	if syncData[0][0].Versions[0] != "v1" {
+		t.Errorf("expected versions[0] to be 'v1', got %q", syncData[0][0].Versions[0])
+	}
+	if syncData[0][0].Kinds[0] != "PodDisruptionBudget" {
+		t.Errorf("expected kinds[0] to be 'PodDisruptionBudget', got %q", syncData[0][0].Kinds[0])
+	}
+
+	if syncData[0][1].Groups[0] != "apps" {
+		t.Errorf("expected groups[0] to be 'apps', got %q", syncData[0][1].Groups[0])
+	}
+	if len(syncData[0][1].Kinds) != 2 {
+		t.Errorf("expected 2 kinds in second entry, got %d", len(syncData[0][1].Kinds))
+	}
+}
+
+func TestSyncData_Nested(t *testing.T) {
+	comments := `
+# METADATA
+# title: Test Policy
+# custom:
+#   syncData:
+#   - - groups:
+#       - extensions
+#       versions:
+#       - v1beta1
+#       kinds:
+#       - Ingress
+#     - groups:
+#       - networking.k8s.io
+#       versions:
+#       - v1beta1
+#       - v1
+#       kinds:
+#       - Ingress
+#   - - groups:
+#       - storage.k8s.io
+#       versions:
+#       - v1
+#       kinds:
+#       - StorageClass
+package foo
+foo = "bar" { true }
+`
+	rule, err := ast.ParseModuleWithOpts("", comments, ast.ParserOptions{ProcessAnnotation: true})
+	if err != nil {
+		t.Fatalf("Error parsing module: %s", err)
+	}
+
+	rego := Rego{annotations: rule.Annotations[0]}
+	err = rego.parseAnnotations(rule.Annotations[0])
+	if err != nil {
+		t.Fatalf("Error parsing annotations: %s", err)
+	}
+
+	syncData := rego.SyncData()
+	if len(syncData) != 2 {
+		t.Fatalf("expected 2 AND groups, got %d", len(syncData))
+	}
+
+	if len(syncData[0]) != 2 {
+		t.Fatalf("expected 2 OR entries in first AND group, got %d", len(syncData[0]))
+	}
+	if syncData[0][0].Groups[0] != "extensions" {
+		t.Errorf("expected first OR entry groups[0] to be 'extensions', got %q", syncData[0][0].Groups[0])
+	}
+	if syncData[0][1].Groups[0] != "networking.k8s.io" {
+		t.Errorf("expected second OR entry groups[0] to be 'networking.k8s.io', got %q", syncData[0][1].Groups[0])
+	}
+
+	if len(syncData[1]) != 1 {
+		t.Fatalf("expected 1 OR entry in second AND group, got %d", len(syncData[1]))
+	}
+	if syncData[1][0].Groups[0] != "storage.k8s.io" {
+		t.Errorf("expected groups[0] to be 'storage.k8s.io', got %q", syncData[1][0].Groups[0])
+	}
+}
+
+func TestSyncDataJSON(t *testing.T) {
+	comments := `
+# METADATA
+# title: Test Policy
+# custom:
+#   syncData:
+#   - groups:
+#     - policy
+#     versions:
+#     - v1
+#     kinds:
+#     - PodDisruptionBudget
+package foo
+foo = "bar" { true }
+`
+	rule, err := ast.ParseModuleWithOpts("", comments, ast.ParserOptions{ProcessAnnotation: true})
+	if err != nil {
+		t.Fatalf("Error parsing module: %s", err)
+	}
+
+	rego := Rego{annotations: rule.Annotations[0]}
+	err = rego.parseAnnotations(rule.Annotations[0])
+	if err != nil {
+		t.Fatalf("Error parsing annotations: %s", err)
+	}
+
+	jsonStr, err := rego.SyncDataJSON()
+	if err != nil {
+		t.Fatalf("Error getting SyncDataJSON: %s", err)
+	}
+
+	expected := "\"[\n  [\n    {\n      \"groups\": [\n        \"policy\"\n      ],\n      \"versions\": [\n        \"v1\"\n      ],\n      \"kinds\": [\n        \"PodDisruptionBudget\"\n      ]\n    }\n  ]\n]\""
+	if jsonStr != expected {
+		t.Errorf("unexpected JSON output.\nexpected:\n%s\n\nactual:\n%s", expected, jsonStr)
+	}
+}
+
+func TestSyncData_NoSyncData(t *testing.T) {
+	rule, err := ast.ParseModuleWithOpts("", minimalTestPolicy, ast.ParserOptions{ProcessAnnotation: true})
+	if err != nil {
+		t.Fatalf("Error parsing module: %s", err)
+	}
+
+	rego := Rego{annotations: rule.Annotations[0]}
+	err = rego.parseAnnotations(rule.Annotations[0])
+	if err != nil {
+		t.Fatalf("Error parsing annotations: %s", err)
+	}
+
+	syncData := rego.SyncData()
+	if len(syncData) != 0 {
+		t.Errorf("expected no syncData, got %d", len(syncData))
+	}
+
+	jsonStr, err := rego.SyncDataJSON()
+	if err != nil {
+		t.Fatalf("Error getting SyncDataJSON: %s", err)
+	}
+	if jsonStr != "" {
+		t.Errorf("expected empty string for SyncDataJSON, got %q", jsonStr)
+	}
+}
+
+func TestConstraints(t *testing.T) {
+	comments := `
+# METADATA
+# title: Test Policy
+# custom:
+#   constraints:
+#   - name: prod-deployments
+#     description: Strict limits for production
+#     enforcement: deny
+#     kinds:
+#     - apiGroups:
+#       - apps
+#       kinds:
+#       - Deployment
+#     namespaces:
+#     - production
+#     parameters:
+#       maxReplicas: 10
+#   - name: dev-configmaps
+#     enforcement: warn
+#     kinds:
+#     - apiGroups:
+#       - ""
+#       kinds:
+#       - ConfigMap
+#     excludedNamespaces:
+#     - kube-system
+#     parameters:
+#       maxSize: 1048576
+package foo
+foo = "bar" { true }
+`
+	rule, err := ast.ParseModuleWithOpts("", comments, ast.ParserOptions{ProcessAnnotation: true})
+	if err != nil {
+		t.Fatalf("Error parsing module: %s", err)
+	}
+
+	rego := Rego{annotations: rule.Annotations[0]}
+	err = rego.parseAnnotations(rule.Annotations[0])
+	if err != nil {
+		t.Fatalf("Error parsing annotations: %s", err)
+	}
+
+	constraints := rego.Constraints()
+	if len(constraints) != 2 {
+		t.Fatalf("expected 2 constraints, got %d", len(constraints))
+	}
+
+	c1 := constraints[0]
+	if c1.Name != "prod-deployments" {
+		t.Errorf("expected name 'prod-deployments', got %q", c1.Name)
+	}
+	if c1.Description != "Strict limits for production" {
+		t.Errorf("expected description, got %q", c1.Description)
+	}
+	if c1.Enforcement != "deny" {
+		t.Errorf("expected enforcement 'deny', got %q", c1.Enforcement)
+	}
+	if len(c1.Kinds) != 1 || c1.Kinds[0].APIGroups[0] != "apps" {
+		t.Errorf("expected kinds with apiGroup 'apps', got %v", c1.Kinds)
+	}
+	if len(c1.Namespaces) != 1 || c1.Namespaces[0] != "production" {
+		t.Errorf("expected namespaces ['production'], got %v", c1.Namespaces)
+	}
+
+	c2 := constraints[1]
+	if c2.Name != "dev-configmaps" {
+		t.Errorf("expected name 'dev-configmaps', got %q", c2.Name)
+	}
+	if c2.Enforcement != "warn" {
+		t.Errorf("expected enforcement 'warn', got %q", c2.Enforcement)
+	}
+	if len(c2.ExcludedNamespaces) != 1 || c2.ExcludedNamespaces[0] != "kube-system" {
+		t.Errorf("expected excludedNamespaces ['kube-system'], got %v", c2.ExcludedNamespaces)
+	}
+}
+
+func TestConstraints_NoConstraints(t *testing.T) {
+	rule, err := ast.ParseModuleWithOpts("", minimalTestPolicy, ast.ParserOptions{ProcessAnnotation: true})
+	if err != nil {
+		t.Fatalf("Error parsing module: %s", err)
+	}
+
+	rego := Rego{annotations: rule.Annotations[0]}
+	err = rego.parseAnnotations(rule.Annotations[0])
+	if err != nil {
+		t.Fatalf("Error parsing annotations: %s", err)
+	}
+
+	constraints := rego.Constraints()
+	if len(constraints) != 0 {
+		t.Errorf("expected no constraints, got %d", len(constraints))
 	}
 }

@@ -169,3 +169,95 @@ You can optionally specify annotations and labels for the generated Constraint. 
 #     "argocd.argoproj.io/sync-options": "SkipDryRunOnMissingResource=true"
 ...
 ```
+
+## Documentation Links
+
+You can specify documentation links using the `links` annotation. Both single string and array formats are supported:
+
+```rego
+# METADATA
+# title: Example Policy
+# custom:
+#   links:
+#   - https://kubernetes.io/docs/example1/
+#   - https://kubernetes.io/docs/example2/
+```
+
+In custom templates, access via `{{ .Policy.Links }}` which returns a `[]string`.
+
+## Sync Data for Referential Constraints
+
+For policies that require data from other Kubernetes resources, use the `syncData` annotation to specify what Gatekeeper should cache. This populates the `metadata.gatekeeper.sh/requires-sync-data` annotation.
+
+```rego
+# METADATA
+# title: Unique Ingress Host
+# custom:
+#   syncData:
+#   - groups: ["networking.k8s.io"]
+#     versions: ["v1"]
+#     kinds: ["Ingress"]
+```
+
+For complex AND/OR logic, use nested arrays:
+
+```rego
+# custom:
+#   syncData:
+#   - - groups: ["extensions"]        # OR group 1
+#       versions: ["v1beta1"]
+#       kinds: ["Ingress"]
+#     - groups: ["networking.k8s.io"]
+#       versions: ["v1"]
+#       kinds: ["Ingress"]
+#   - - groups: ["storage.k8s.io"]    # AND with above
+#       versions: ["v1"]
+#       kinds: ["StorageClass"]
+```
+
+The format is `[ [{}OR{}] AND [{}OR{}] ]`. In custom templates, use `{{ .Policy.SyncDataJSON }}` for the properly formatted annotation value.
+
+## Multiple Constraint Configurations
+
+To document multiple constraint variations from a single policy template, use the `constraints` annotation:
+
+```rego
+# METADATA
+# title: Resource Limits
+# custom:
+#   constraints:
+#   - name: prod-deployments
+#     description: Strict limits for production
+#     enforcement: deny
+#     kinds:
+#     - apiGroups:
+#       - apps
+#       kinds:
+#       - Deployment
+#     namespaces:
+#     - production
+#     parameters:
+#       maxReplicas: 5
+#   - name: dev-deployments
+#     enforcement: warn
+#     kinds:
+#     - apiGroups:
+#       - apps
+#       kinds:
+#       - Deployment
+#     excludedNamespaces:
+#     - kube-system
+#     parameters:
+#       maxReplicas: 100
+```
+
+Each constraint config supports:
+- `name` - constraint name
+- `description` - optional description
+- `enforcement` - `deny`, `warn`, or `dryrun`
+- `kinds` - kind matchers (same format as policy-level matchers)
+- `namespaces` - namespace list
+- `excludedNamespaces` - excluded namespace list
+- `parameters` - parameter values
+
+In custom templates, iterate with `{{ range .Policy.Constraints }}`.
